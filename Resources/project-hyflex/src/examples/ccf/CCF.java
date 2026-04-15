@@ -1,214 +1,166 @@
 package examples.ccf;
-
 import AbstractClasses.HyperHeuristic;
 import AbstractClasses.ProblemDomain;
-import AbstractClasses.ProblemDomain.HeuristicType;
-
+import java.text.DecimalFormat;
 
 /**
- * This class implements a simplified choice function hyper-heuristics:
- * - heuristic selection: Simplified Choice Function (SCF)
- * - acceptance criteria: a simple 'All Moves' acceptance
- * - low-level heuristics: heuristics of type MUTATION, LOCAL_SEARCH, RUIN_RECREATE.
+ * This is the source code of modified choice function using a simple 'All Moves' acceptance criteria as described in: 
+ * Drake, J. H., Özcan, E., & Burke, E. K. (2012). An improved choice function heuristic selection for cross domain heuristic search. 
+ * Original source code available at https://www.researchgate.net/publication/257922567_Java_Source_of_Modified_Choice_Function_-_All_Moves_hyper-heuristic
  * 
- * For each of these heuristics, parameters IOM and DOS are applied.
+ * This version has been adapted for use in the NATCOR2024 @UoN by @author Weiyao Meng (weiyao.meng2@nottingham.ac.uk)
+ * Additional comments have been added for clarity.
  * 
- * @author Weiyao Meng (weiyao.meng2@nottingham.ac.uk)
  * @date 2024.03.26
  */
 
 public class CCF extends HyperHeuristic {
 	
-	// Default values for DOS and IOM parameters
-	double[] dosValues = {0.2, 0.2, 0.2}, iomValues = {0.2, 0.2, 0.2}; 
-	double phi = 0.50;
-	
-	
-	public CCF(long seed) {
+	/**
+	 * creates a new ModifiedChoiceFunctionAllMoves object with a random seed
+	 */
+	public CCF(long seed){
 		super(seed);
 	}
 	
 	/**
-     * Constructs a new SCF hyper-heuristic with the given seed and custom DOS/IOM values.
-     * 
-     * @param seed the seed value for random number generation
-     * @param dosValue an array of custom DOS values for heuristics
-     * @param iomValue an array of custom IOM values for heuristics
-     */
-	
-	public CCF(long seed, double[] dosValue, double[] iomValue) {
-
-		super(seed);
-		this.dosValues = dosValue;
-		this.iomValues = iomValue;
-
-	}
-	
-//	public SCF(long seed, double[] dosValue, double[] iomValue, double paramPhi) {
-//
-//		super(seed);
-//		this.dosValues = dosValue;
-//		this.iomValues = iomValue;
-//		this.phi = paramPhi;
-//
-//	}
-	
-	/**
-	 * Solves the given problem using the Simplified Choice Function (SCF) hyper-heuristic.
-	 * This function implements a loop that continues until the termination criterion is met.
-	 * In each iteration, a heuristic is selected either randomly (during initialisation iterations)
-	 * or based on the SCF's heuristic selection mechanism. 
-	 * The selected heuristic is then applied to the current solution, and its data is updated accordingly. 
-	 * The process continues until the termination criterion is reached.
-	 * 
+	 * This method defines the strategy of the hyper-heuristic
 	 * @param problem the problem domain to be solved
 	 */
-	public void solve(ProblemDomain problem) {
+	public void solve(ProblemDomain problem) {  
 		
-		int heuristic_to_apply = 0; // Variable to store the ID of the heuristic to apply
-		int init_flag = 0; // Flag to track initialisation iterations
-		long time_exp_before, time_exp_after, time_to_apply; // Variables for timing
-		double new_obj_function_value = 0.00; // Variable to store the objective value of the new solution
+		//record the number of low level heuristics
+		int number_of_heuristics = problem.getNumberOfHeuristics();
 		
-		// Record the start time in nanoseconds
-		long startTimeNano = System.nanoTime();
-			
-		// Create heuristics array with customised configurations
-		Heuristic[] heuristics = createHeuristics(problem, dosValues, iomValues, startTimeNano);
+		//initialise phi and delta
+		double phi = 0.50, delta = 0.50; 
+		//initialise heuristic id, solution quality value etc.
+		int heuristic_to_apply = 0, init_flag = 0;
+		//initialise the variable that stores the ID of the last heuristic that was applied to the solution
+		int last_heuristic_called = 0;
 		
-		// Determine the set of heuristics to use based on the problem domain
-		int[] heuristics_to_use = get_heuristics_to_use(problem);
+		//initialise the solution at index 0 in the solution memory array
+		problem.initialiseSolution(0); 
 		
-		// Initialise the current solution and get its objective value
-		problem.initialiseSolution(0);
+		//initialise variables which keep track of the objective function values
 		double current_obj_function_value = problem.getFunctionValue(0);
-
-		// Initialise the Simplified Choice Function (SCF) with the created heuristics and customised parameter phi
-		CustomChoiceFunction scf = new CustomChoiceFunction(heuristics, phi);
-//		SimplifiedChoiceFunction scf = new SimplifiedChoiceFunction(heuristics);
+		double new_obj_function_value = 0.00, best_heuristic_score = 0.00, fitness_change = 0.00, prev_fitness_change = 0.00;
 		
-		// Set the first heuristic to apply
-		Heuristic h = heuristics[0];
+		//initialise variables which keep track of the time usage
+		long time_exp_before, time_exp_after, time_to_apply;
 		
-		// Main loop to continue solving until termination criterion is met
-		while(!hasTimeExpired()) {
-			
-			if(init_flag<heuristics_to_use.length) { // Randomly select a heuristic during initialisation
-				int randomIndex = rng.nextInt(heuristics_to_use.length);
-				heuristic_to_apply = heuristics_to_use[randomIndex];
-				h = heuristics[heuristic_to_apply];
-				init_flag++;
-			}else { // Otherwise, select heuristic using SCF's selection mechanism
-				h = scf.selectHeuristicToApply();
+		/* 
+		 * 'F':  store the calculated scores for each heuristic based on the modified choice function
+		 * 'f1': store values related to the performance of heuristics over time
+		 * 'f2': store values related to the relationship between pairs of heuristics
+		 * 'f3': store values related to the time taken to apply each heuristic
+		 */
+		double[] F = new double[number_of_heuristics], f1 = new double[number_of_heuristics], f3 = new double[number_of_heuristics];
+		double[][] f2 = new double[number_of_heuristics][number_of_heuristics];
+		
+		/*
+		 * Retrieve heuristics of type CROSSOVER from the problem domain and assigns a negative infinite value to the corresponding elements of the f3 array
+		 * This essentially ensures that heuristics of type CROSSOVER are never selected during the heuristic selection process.
+		 */
+		int[] crossover_heuristics = problem.getHeuristicsOfType(ProblemDomain.HeuristicType.CROSSOVER);
+		for (int i = 0; i < crossover_heuristics.length;i++) {//Give crossover no chance of being selected
+			f3[crossover_heuristics[i]]=Double.NEGATIVE_INFINITY;
+		}
+		
+		while (!hasTimeExpired()) { //main loop which runs until time has expired
+			if (init_flag > 1) { //flag used to select heuristics randomly for the first two iterations
+				// for iterations after the first two
+				best_heuristic_score = 0.0;
+				
+				for (int i = 0; i < number_of_heuristics; i++) {
+					// Update the score for each heuristic using the modified choice function
+					F[i] = phi * f1[i] + phi * f2[i][last_heuristic_called] + delta * f3[i];
+					// Check if the current heuristic has a better score than the best heuristic so far
+					if (F[i] > best_heuristic_score) {
+						// If yes, update the best heuristic and its score
+						heuristic_to_apply = i; 
+						best_heuristic_score = F[i];
+					}
+				}
+			}
+			else {
+				//unpleasant way to check crossover not initially selected randomly
+				boolean crossflag = true;
+				while(crossflag){
+					heuristic_to_apply = rng.nextInt(number_of_heuristics);
+					crossflag = false; //assume not crossover before checking if it is
+					for (int i = 0; i < crossover_heuristics.length;i++) {
+						if(heuristic_to_apply == crossover_heuristics[i]){
+							crossflag = true;
+						}
+					}
+				}
 			}
 			
-//			System.out.println("To use next: "+h.getHeuristicId());
-			
-			// Set the dos and iom based on the selected LLH
-			problem.setDepthOfSearch(h.getConfiguration().getDos());
-			problem.setIntensityOfMutation(h.getConfiguration().getIom());
-						
-			// Apply the selected heuristic to the current solution and record the time taken
-			time_exp_before = System.nanoTime();
-			new_obj_function_value = problem.applyHeuristic(h.getHeuristicId(), 0, 0);
-			time_exp_after = System.nanoTime();
+			//apply the chosen heuristic to the solution at index 0 in the memory and replace it immediately with the new solution
+			time_exp_before = getElapsedTime();
+			new_obj_function_value = problem.applyHeuristic(heuristic_to_apply, 0, 0);
+			time_exp_after = getElapsedTime();
 			time_to_apply = time_exp_after - time_exp_before + 1; //+1 prevents / by 0
-												
-			// Update heuristic data based on the applied heuristic and obtained solution
-			scf.updateHeuristicData(h, time_exp_before, time_to_apply, current_obj_function_value, new_obj_function_value);
-			
-			// Print out the information of heuristics
-//			this.printHeuristicInfo(h);
-//			this.printHeuristicsInfo(heuristics);
-			
+
+			//calculate the change in fitness from the current solution to the new solution
+			fitness_change = current_obj_function_value - new_obj_function_value;
+
 			//set the current objective function value to the new function value as the new solution is now the current solution
 			current_obj_function_value = new_obj_function_value;
+
+			//update f1, f2 and f3 values for appropriate heuristics 
+			//first two iterations dealt with separately to set-up variables
+			if (init_flag > 1) {
+				f1[heuristic_to_apply] = fitness_change / time_to_apply + phi * f1[heuristic_to_apply];
+				f2[heuristic_to_apply][last_heuristic_called] = prev_fitness_change + fitness_change / time_to_apply + phi * f2[heuristic_to_apply][last_heuristic_called];
+			} else if (init_flag == 1) {
+				f1[heuristic_to_apply] = fitness_change / time_to_apply;
+				f2[heuristic_to_apply][last_heuristic_called] = prev_fitness_change + fitness_change / time_to_apply + prev_fitness_change;
+				init_flag++;
+			} else { //i.e. init_flag = 0
+				f1[heuristic_to_apply] = fitness_change / time_to_apply;
+				init_flag++;
+			} 
+			for (int i = 0; i < number_of_heuristics; i++) {
+				f3[i] += time_to_apply;
+			}
+			f3[heuristic_to_apply] = 0.00;
+
+			if (fitness_change > 0.00) {//in case of improvement
+				phi = 0.99;
+				delta = 0.01;
+				prev_fitness_change = fitness_change / time_to_apply;
+			} else {//non-improvement
+				if (phi > 0.01) {
+					phi -= 0.01;                                                                          
+				}
+				phi = roundTwoDecimals(phi);
+				delta = 1.00 - phi;
+				delta = roundTwoDecimals(delta);
+				prev_fitness_change = 0.00;
+			}
+			last_heuristic_called = heuristic_to_apply;
 		}
+		
 	}
 	
+	/**
+	 * this method must be implemented, to provide a different name for each hyper-heuristic
+	 * @return a string representing the name of the hyper-heuristic
+	 */
 	public String toString() {
-
-		return "SCF_AM_HH";
+		return "Modified Choice Function - All Moves";
 	}
 	
 	/**
-	 * Creates an array of heuristic objects based on the problem domain and custom parameter values.
-	 * 
-	 * @param problem the problem domain
-	 * @param dosValues an array of depth of search (DOS) parameter values
-	 * @param iomValues an array of intensity of mutation (IOM) parameter values
-	 * @param startTimeNano the start time in nanoseconds
-	 * @return an array of configured heuristic objects
+	 * this method is introduced to combat some rounding issues introduced by Java
+	 * @return a double of the input d, rounded to two decimal places
 	 */
-	private Heuristic[] createHeuristics(ProblemDomain problem, double[] dosValues, double[] iomValues, long startTimeNano) {
-		
-		// Initialise array to store heuristic objects
-		int numHeuristics = problem.getNumberOfHeuristics();
-		Heuristic[] heuristics = new Heuristic[numHeuristics];
-		
-		// Create heuristic objects with default configurations
-    	for (int i = 0; i < numHeuristics; i++) {
-            HeuristicConfiguration configuration = new HeuristicConfiguration(0.2, 0.2);
-            heuristics[i] = new Heuristic(configuration, i, startTimeNano); 
-        }
-        
-    	// Retrieve heuristics that use DOS and IOM parameters
-        int[] dosHeuristics = problem.getHeuristicsThatUseDepthOfSearch();
-        int[] iomHeuristics = problem.getHeuristicsThatUseIntensityOfMutation();
- 
-        // Apply custom DOS values to corresponding heuristic IDs
-        for (int i = 0; i < dosHeuristics.length; i++) {
-            int id = dosHeuristics[i];
-            double value = dosValues[i];
-            heuristics[id].getConfiguration().setDos(value);
-        }
-        
-        // Apply custom IOM values to corresponding heuristic IDs
-        for (int i = 0; i < iomHeuristics.length; i++) {
-            int id = iomHeuristics[i];
-            double value = iomValues[i];
-            heuristics[id].getConfiguration().setIom(value); 
-        }
-
-        return heuristics; //return the array heuristics containing all the configured heuristic objects.
-    }
-	
-	/**
-	 * Retrieves an array of heuristic IDs to use based on the problem domain types.
-	 * 
-	 * @param problem the problem domain
-	 * @return an array of heuristic IDs to use
-	 */
-	private int[] get_heuristics_to_use(ProblemDomain problem) {
-		// Retrieve heuristics of different types from the problem domain
-		int[] mutations = problem.getHeuristicsOfType(HeuristicType.MUTATION);
-		int[] ruin_recreates = problem.getHeuristicsOfType(HeuristicType.RUIN_RECREATE);
-		int[] local_searches = problem.getHeuristicsOfType(HeuristicType.LOCAL_SEARCH);
-		
-		// Calculate total length of all heuristic types
-		int totalLength = mutations.length + ruin_recreates.length + local_searches.length;
-		
-		// Create array to store heuristic IDs to use
-		int[] heuristics_to_use = new int[totalLength];
-		
-		// Copy heuristic IDs of each type to the combined array
-		System.arraycopy(mutations, 0, heuristics_to_use, 0, mutations.length);
-		System.arraycopy(ruin_recreates, 0, heuristics_to_use, mutations.length, ruin_recreates.length);
-		System.arraycopy(local_searches, 0, heuristics_to_use, mutations.length + ruin_recreates.length, local_searches.length);
-		
-		return heuristics_to_use; // Return the array of heuristic IDs to use
+	public double roundTwoDecimals(double d) {
+		DecimalFormat two_d_form = new DecimalFormat("#.##");
+		return Double.valueOf(two_d_form.format(d));
 	}
-	
-	private void printHeuristicInfo(Heuristic h) {
-		System.out.println("ID: "+h.getHeuristicId()+" IOM: "+h.getConfiguration().getIom()+" DOS: "+h.getConfiguration().getDos()+" LastApplied: "+h.getData().getTimeLastApplied());
-	}
-	
-	private void printHeuristicsInfo(Heuristic[] heuristics) {
-		for(Heuristic h: heuristics) {
-			this.printHeuristicInfo(h);
-		}
-	}
-	
 	
 
 }

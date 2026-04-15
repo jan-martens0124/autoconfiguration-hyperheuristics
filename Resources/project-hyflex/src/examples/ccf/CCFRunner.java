@@ -5,25 +5,19 @@ import AbstractClasses.ProblemDomain;
 import travelingSalesmanProblem.TSP;
 
 /**
- * This class shows how to run the simplified hyper-heuristic.
-
- * @author Weiyao Meng (weiyao.meng2@nottingham.ac.uk)
- * @date 2024.04.04
+ * This class shows how to run the modified choice function hyper-heuristic on a selected problem domain.
+ * It shows the minimum that must be done to test a hyper heuristic on a problem domain.
  */
 
 public class CCFRunner {
 
 	public static void main(String[] args) {
-		
-		double[] dos = {0.2, 0.4, 0.6};
-		double[] iom = {0.1, 0.3, 0.5};
 
 		//create a ProblemDomain object with a seed for the random number generator
 		ProblemDomain problem = new TSP(1234);
 
-		//creates an ExampleHyperHeuristic object with a seed for the random number generator
-//		HyperHeuristic hyper_heuristic_object = new SCF(5678);
-		HyperHeuristic hyper_heuristic_object = new CCF(5678, dos, iom);
+		//creates an MCFHH object with a seed for the random number generator
+		HyperHeuristic hyper_heuristic_object = new CCF(5678);
 
 		//we must load an instance within the problem domain, in this case we choose instance 2
 		problem.loadInstance(0);
