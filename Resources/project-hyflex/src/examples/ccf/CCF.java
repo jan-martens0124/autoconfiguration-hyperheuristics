@@ -75,11 +75,12 @@ public class CCF extends HyperHeuristic {
 		//record the number of low level heuristics
 		int number_of_heuristics = problem.getNumberOfHeuristics();
 		Heuristic[] heuristics = createHeuristics(problem, dosValues, iomValues);
+		final int tournamentSize = 3;
 		
 		//initialise phi and delta
 		double phi = this.phi, delta = this.delta; 
 		//initialise action id, solution quality value etc.
-		int action_to_apply = 0, init_flag = 0;
+		int best_action_to_apply = 0, init_flag = 0;
 		//initialise the variable that stores the ID of the last action that was applied to the solution
 		int last_action_called = 0;
 		
@@ -125,6 +126,12 @@ public class CCF extends HyperHeuristic {
 			}
 		}
 		int number_of_actions = actions.size();
+		if (number_of_actions == 0) {
+			return;
+		}
+
+		// 0 is current solution; 1,2,3 are trial solutions for candidate actions
+		problem.setMemorySize(4);
 
 		/* 
 		 * 'F':  store the calculated scores for each action based on the modified choice function
@@ -136,65 +143,93 @@ public class CCF extends HyperHeuristic {
 		double[][] f2 = new double[number_of_actions][number_of_actions];
 		
 		while (!hasTimeExpired()) { //main loop which runs until time has expired
-			if (init_flag > 1) { //flag used to select actions randomly for the first two iterations
-				// for iterations after the first two
-				best_action_score = 0.0;
-				
-				for (int i = 0; i < number_of_actions; i++) {
-					// Update the score for each action using the modified choice function
-					F[i] = phi * f1[i] + phi * f2[i][last_action_called] + delta * f3[i];
-					// Check if the current action has a better score than the best action so far
-					if (F[i] > best_action_score) {
-						// If yes, update the best action and its score
-						action_to_apply = i; 
-						best_action_score = F[i];
-					}
+			best_action_score = 0.0;
+
+			for (int i = 0; i < number_of_actions; i++) {
+				// Update the score for each action using the modified choice function
+				F[i] = phi * f1[i] + phi * f2[i][last_action_called] + delta * f3[i];
+				// Check if the current action has a better score than the best action so far
+				if (F[i] > best_action_score) {
+					// If yes, update the best action and its score
+					best_action_to_apply = i;
+					best_action_score = F[i];
 				}
 			}
-			else {
-				action_to_apply = rng.nextInt(number_of_actions);
-			}
-			
-			//apply the chosen action to the solution at index 0 in the memory and replace it immediately with the new solution
-			Action action = actions.get(action_to_apply);
-			time_exp_before = getElapsedTime();
-			applyHeuristicWithConfiguration(problem, heuristics[action.first]);
-			new_obj_function_value = problem.applyHeuristic(action.first, 0, 0);
-			if (action.isChain()) {
-				applyHeuristicWithConfiguration(problem, heuristics[action.second]);
-				new_obj_function_value = problem.applyHeuristic(action.second, 0, 0);
-			}
-			time_exp_after = getElapsedTime();
-			time_to_apply = time_exp_after - time_exp_before + 1; //+1 prevents / by 0
 
-			//calculate the change in fitness from the current solution to the new solution
-			fitness_change = current_obj_function_value - new_obj_function_value;
+			int candidatesToTry = number_of_actions >= 3 ? 2 + rng.nextInt(2) : Math.min(2, number_of_actions);
+			int[] candidateActions = new int[candidatesToTry];
+			boolean[] chosen = new boolean[number_of_actions];
+			int selectedCount = 0;
 
-			//set the current objective function value to the new function value as the new solution is now the current solution
-			current_obj_function_value = new_obj_function_value;
+			candidateActions[selectedCount++] = best_action_to_apply;
+			chosen[best_action_to_apply] = true;
+
+			while (selectedCount < candidatesToTry) {
+				int selected = selectByTournament(F, chosen, tournamentSize);
+				if (selected < 0) {
+					break;
+				}
+				candidateActions[selectedCount++] = selected;
+				chosen[selected] = true;
+			}
+
+			int winningAction = candidateActions[0];
+			double winningObjValue = Double.POSITIVE_INFINITY;
+			long winningTimeToApply = 1;
+			long totalTrialTime = 0;
+
+			// Evaluate candidates on copied solutions and accept the most effective one
+			for (int c = 0; c < selectedCount; c++) {
+				int actionIndex = candidateActions[c];
+				Action action = actions.get(actionIndex);
+				int targetIndex = c + 1; // use memory slots 1..3
+
+				time_exp_before = getElapsedTime();
+				new_obj_function_value = executeActionOnMemory(problem, heuristics, action, 0, targetIndex);
+				time_exp_after = getElapsedTime();
+				time_to_apply = time_exp_after - time_exp_before + 1; //+1 prevents / by 0
+				totalTrialTime += time_to_apply;
+
+				if (new_obj_function_value < winningObjValue) {
+					winningObjValue = new_obj_function_value;
+					winningAction = actionIndex;
+					winningTimeToApply = time_to_apply;
+				}
+			}
+
+			for (int c = 0; c < selectedCount; c++) {
+				if (candidateActions[c] == winningAction) {
+					problem.copySolution(c + 1, 0);
+					break;
+				}
+			}
+
+			//calculate the change in fitness from the current solution to the new accepted solution
+			fitness_change = current_obj_function_value - winningObjValue;
+			current_obj_function_value = winningObjValue;
 
 			//update f1, f2 and f3 values for appropriate actions 
 			//first two iterations dealt with separately to set-up variables
 			if (init_flag > 1) {
-				f1[action_to_apply] = fitness_change / time_to_apply + phi * f1[action_to_apply];
-				f2[action_to_apply][last_action_called] = prev_fitness_change + fitness_change / time_to_apply + phi * f2[action_to_apply][last_action_called];
+				f1[winningAction] = fitness_change / winningTimeToApply + phi * f1[winningAction];
+				f2[winningAction][last_action_called] = prev_fitness_change + fitness_change / winningTimeToApply + phi * f2[winningAction][last_action_called];
 			} else if (init_flag == 1) {
-				f1[action_to_apply] = fitness_change / time_to_apply;
-				f2[action_to_apply][last_action_called] = prev_fitness_change + fitness_change / time_to_apply + prev_fitness_change;
+				f1[winningAction] = fitness_change / winningTimeToApply;
+				f2[winningAction][last_action_called] = prev_fitness_change + fitness_change / winningTimeToApply + prev_fitness_change;
 				init_flag++;
 			} else { //i.e. init_flag = 0
-				f1[action_to_apply] = fitness_change / time_to_apply;
+				f1[winningAction] = fitness_change / winningTimeToApply;
 				init_flag++;
 			} 
 			for (int i = 0; i < number_of_actions; i++) {
-				f3[i] += time_to_apply;
+				f3[i] += totalTrialTime;
 			}
-			f3[action_to_apply] = 0.00;
+			f3[winningAction] = 0.00;
 
 			if (fitness_change > 0.00) {//in case of improvement
 				phi = 0.99;
 				delta = 0.01;
-				prev_fitness_change = fitness_change / time_to_apply;
+				prev_fitness_change = fitness_change / winningTimeToApply;
 			} else {//non-improvement
 				if (phi > 0.01) {
 					phi -= 0.01;                                                                          
@@ -204,7 +239,7 @@ public class CCF extends HyperHeuristic {
 				delta = roundTwoDecimals(delta);
 				prev_fitness_change = 0.00;
 			}
-			last_action_called = action_to_apply;
+			last_action_called = winningAction;
 		}
 		
 	}
@@ -229,6 +264,47 @@ public class CCF extends HyperHeuristic {
 	private void applyHeuristicWithConfiguration(ProblemDomain problem, Heuristic heuristic) {
 		problem.setDepthOfSearch(heuristic.getConfiguration().getDos());
 		problem.setIntensityOfMutation(heuristic.getConfiguration().getIom());
+	}
+
+	private double executeActionOnMemory(ProblemDomain problem, Heuristic[] heuristics, Action action, int sourceIndex, int targetIndex) {
+		applyHeuristicWithConfiguration(problem, heuristics[action.first]);
+		double result = problem.applyHeuristic(action.first, sourceIndex, targetIndex);
+		if (action.isChain()) {
+			applyHeuristicWithConfiguration(problem, heuristics[action.second]);
+			result = problem.applyHeuristic(action.second, targetIndex, targetIndex);
+		}
+		return result;
+	}
+
+	private int selectByTournament(double[] scores, boolean[] excluded, int tournamentSize) {
+		int n = scores.length;
+		int available = 0;
+		for (int i = 0; i < n; i++) {
+			if (!excluded[i]) {
+				available++;
+			}
+		}
+		if (available == 0) {
+			return -1;
+		}
+
+		int samples = Math.min(tournamentSize, available);
+		int best = -1;
+		double bestScore = Double.NEGATIVE_INFINITY;
+		boolean[] localPicked = new boolean[n];
+
+		for (int s = 0; s < samples; s++) {
+			int idx = -1;
+			while (idx < 0 || excluded[idx] || localPicked[idx]) {
+				idx = rng.nextInt(n);
+			}
+			localPicked[idx] = true;
+			if (scores[idx] > bestScore) {
+				bestScore = scores[idx];
+				best = idx;
+			}
+		}
+		return best;
 	}
 
 	private Heuristic[] createHeuristics(ProblemDomain problem, double[] dosValues, double[] iomValues) {
