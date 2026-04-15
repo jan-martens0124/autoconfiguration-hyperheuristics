@@ -84,7 +84,7 @@ public class SCF extends HyperHeuristic {
 		double current_obj_function_value = problem.getFunctionValue(0);
 
 		// Initialise the Simplified Choice Function (SCF) with the created heuristics and customised parameter phi
-		SimplifiedChoiceFunction scf = new SimplifiedChoiceFunction(heuristics, phi);
+		SimpleChoiceFunction scf = new SimpleChoiceFunction(heuristics, phi);
 //		SimplifiedChoiceFunction scf = new SimplifiedChoiceFunction(heuristics);
 		
 		// Set the first heuristic to apply
