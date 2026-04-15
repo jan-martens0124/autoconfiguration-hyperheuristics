@@ -74,6 +74,7 @@ public class CCF extends HyperHeuristic {
 		
 		//record the number of low level heuristics
 		int number_of_heuristics = problem.getNumberOfHeuristics();
+		Heuristic[] heuristics = createHeuristics(problem, dosValues, iomValues);
 		
 		//initialise phi and delta
 		double phi = this.phi, delta = this.delta; 
@@ -157,8 +158,10 @@ public class CCF extends HyperHeuristic {
 			//apply the chosen action to the solution at index 0 in the memory and replace it immediately with the new solution
 			Action action = actions.get(action_to_apply);
 			time_exp_before = getElapsedTime();
+			applyHeuristicWithConfiguration(problem, heuristics[action.first]);
 			new_obj_function_value = problem.applyHeuristic(action.first, 0, 0);
 			if (action.isChain()) {
+				applyHeuristicWithConfiguration(problem, heuristics[action.second]);
 				new_obj_function_value = problem.applyHeuristic(action.second, 0, 0);
 			}
 			time_exp_after = getElapsedTime();
@@ -221,6 +224,38 @@ public class CCF extends HyperHeuristic {
 	public double roundTwoDecimals(double d) {
 		DecimalFormat two_d_form = new DecimalFormat("#.##");
 		return Double.valueOf(two_d_form.format(d));
+	}
+
+	private void applyHeuristicWithConfiguration(ProblemDomain problem, Heuristic heuristic) {
+		problem.setDepthOfSearch(heuristic.getConfiguration().getDos());
+		problem.setIntensityOfMutation(heuristic.getConfiguration().getIom());
+	}
+
+	private Heuristic[] createHeuristics(ProblemDomain problem, double[] dosValues, double[] iomValues) {
+		int numHeuristics = problem.getNumberOfHeuristics();
+		Heuristic[] heuristics = new Heuristic[numHeuristics];
+
+		for (int i = 0; i < numHeuristics; i++) {
+			HeuristicConfiguration configuration = new HeuristicConfiguration(0.2, 0.2);
+			heuristics[i] = new Heuristic(configuration, i);
+		}
+
+		int[] dosHeuristics = problem.getHeuristicsThatUseDepthOfSearch();
+		int[] iomHeuristics = problem.getHeuristicsThatUseIntensityOfMutation();
+
+		int dosLimit = Math.min(dosHeuristics.length, dosValues.length);
+		for (int i = 0; i < dosLimit; i++) {
+			int id = dosHeuristics[i];
+			heuristics[id].getConfiguration().setDos(dosValues[i]);
+		}
+
+		int iomLimit = Math.min(iomHeuristics.length, iomValues.length);
+		for (int i = 0; i < iomLimit; i++) {
+			int id = iomHeuristics[i];
+			heuristics[id].getConfiguration().setIom(iomValues[i]);
+		}
+
+		return heuristics;
 	}
 	
 
