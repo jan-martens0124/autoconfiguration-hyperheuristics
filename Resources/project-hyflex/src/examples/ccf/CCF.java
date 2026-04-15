@@ -18,6 +18,12 @@ import java.util.List;
 
 public class CCF extends HyperHeuristic {
 
+	// Default values for DOS and IOM parameters
+	double[] dosValues = {0.2, 0.2, 0.2}, iomValues = {0.2, 0.2, 0.2}; 
+
+	// Default value for phi parameter
+	double phi = 0.50, delta = 0.50;
+
 	private static class Action {
 		private final int first;
 		private final Integer second;
@@ -38,12 +44,28 @@ public class CCF extends HyperHeuristic {
 	}
 	
 	/**
-	 * creates a new ModifiedChoiceFunctionAllMoves object with a random seed
+	 * creates a new CustomChoiceFunctionAllMoves object with a random seed
 	 */
 	public CCF(long seed){
 		super(seed);
 	}
-	
+
+	/**
+     * Constructs a new CCF hyper-heuristic with the given seed and custom DOS/IOM values.
+     * 
+     * @param seed the seed value for random number generation
+     * @param dosValue an array of custom DOS values for heuristics
+     * @param iomValue an array of custom IOM values for heuristics
+     * @param phi the phi parameter for the modified choice function
+     */
+	public CCF(long seed, double[] dosValues, double[] iomValues, double phi){
+		super(seed);
+		this.dosValues = dosValues;
+		this.iomValues = iomValues;
+		this.phi = phi;
+		this.delta = 1.00 - phi;
+	}
+
 	/**
 	 * This method defines the strategy of the hyper-heuristic
 	 * @param problem the problem domain to be solved
@@ -54,7 +76,7 @@ public class CCF extends HyperHeuristic {
 		int number_of_heuristics = problem.getNumberOfHeuristics();
 		
 		//initialise phi and delta
-		double phi = 0.50, delta = 0.50; 
+		double phi = this.phi, delta = this.delta; 
 		//initialise action id, solution quality value etc.
 		int action_to_apply = 0, init_flag = 0;
 		//initialise the variable that stores the ID of the last action that was applied to the solution
