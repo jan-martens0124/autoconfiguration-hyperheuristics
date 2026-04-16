@@ -18,9 +18,10 @@ public class CCFRunnerConfig {
 		int insid = 0;
 		long time = 60000;
 		double phi = 0.50;
+		int threads = 3;
 
 		if (args.length < 4) {
-			System.err.println("Usage: java -jar <runner.jar> <id.configuration> <id.instance> <seed> <instance> -d <configuration> -i <configuration> -p <phi> -t <time>");
+			System.err.println("Usage: java -jar <runner.jar> <id.configuration> <id.instance> <seed> <instance> -d <configuration> -i <configuration> -p <phi> -t <time> [-th <threads>]");
 			System.exit(1);
 		}
 
@@ -50,12 +51,15 @@ public class CCFRunnerConfig {
 				case "-i":
 					i = parseValues(args, iom, i + 1);
 					break;
+				case "-th":
+					threads = Integer.parseInt(args[++i]);
+					break;
 				default:
 					break;
 			}
 		}
 
-		HyperHeuristic hyper_heuristic_object = new CCF(algseed, dos, iom, phi);
+		HyperHeuristic hyper_heuristic_object = new CCF(algseed, dos, iom, phi, insseed, insid, threads);
 		hyper_heuristic_object.setTimeLimit(time);
 		hyper_heuristic_object.loadProblemDomain(problem);
 		hyper_heuristic_object.run();

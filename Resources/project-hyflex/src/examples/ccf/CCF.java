@@ -4,6 +4,13 @@ import AbstractClasses.ProblemDomain;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * This is the source code of modified choice function using a simple 'All Moves' acceptance criteria as described in: 
@@ -23,6 +30,10 @@ public class CCF extends HyperHeuristic {
 
 	// Default value for phi parameter
 	double phi = 0.50, delta = 0.50;
+	boolean parallelCandidateEvaluation = false;
+	long domainSeed = 1234L;
+	int domainInstanceId = 0;
+	int parallelThreads = 3;
 
 	private static class Action {
 		private final int first;
@@ -66,6 +77,18 @@ public class CCF extends HyperHeuristic {
 		this.delta = 1.00 - phi;
 	}
 
+	public CCF(long seed, double[] dosValues, double[] iomValues, double phi, long domainSeed, int domainInstanceId, int parallelThreads){
+		super(seed);
+		this.dosValues = dosValues;
+		this.iomValues = iomValues;
+		this.phi = phi;
+		this.delta = 1.00 - phi;
+		this.domainSeed = domainSeed;
+		this.domainInstanceId = domainInstanceId;
+		this.parallelThreads = Math.max(1, parallelThreads);
+		this.parallelCandidateEvaluation = true;
+	}
+
 	/**
 	 * This method defines the strategy of the hyper-heuristic
 	 * @param problem the problem domain to be solved
@@ -85,6 +108,7 @@ public class CCF extends HyperHeuristic {
 		int last_action_called = 0;
 		
 		//initialise the solution at index 0 in the solution memory array
+		problem.setMemorySize(2);
 		problem.initialiseSolution(0); 
 		
 		//initialise variables which keep track of the objective function values
@@ -130,9 +154,6 @@ public class CCF extends HyperHeuristic {
 			return;
 		}
 
-		// 0 is current solution; 1,2,3 are trial solutions for candidate actions
-		problem.setMemorySize(4);
-
 		/* 
 		 * 'F':  store the calculated scores for each action based on the modified choice function
 		 * 'f1': store values related to the performance of actions over time
@@ -141,107 +162,160 @@ public class CCF extends HyperHeuristic {
 		 */
 		double[] F = new double[number_of_actions], f1 = new double[number_of_actions], f3 = new double[number_of_actions];
 		double[][] f2 = new double[number_of_actions][number_of_actions];
-		
-		while (!hasTimeExpired()) { //main loop which runs until time has expired
-			best_action_score = 0.0;
 
-			for (int i = 0; i < number_of_actions; i++) {
-				// Update the score for each action using the modified choice function
-				F[i] = phi * f1[i] + phi * f2[i][last_action_called] + delta * f3[i];
-				// Check if the current action has a better score than the best action so far
-				if (F[i] > best_action_score) {
-					// If yes, update the best action and its score
-					best_action_to_apply = i;
-					best_action_score = F[i];
-				}
-			}
-
-			int candidatesToTry = number_of_actions >= 3 ? 2 + rng.nextInt(2) : Math.min(2, number_of_actions);
-			int[] candidateActions = new int[candidatesToTry];
-			boolean[] chosen = new boolean[number_of_actions];
-			int selectedCount = 0;
-
-			candidateActions[selectedCount++] = best_action_to_apply;
-			chosen[best_action_to_apply] = true;
-
-			while (selectedCount < candidatesToTry) {
-				int selected = selectByTournament(F, chosen, tournamentSize);
-				if (selected < 0) {
-					break;
-				}
-				candidateActions[selectedCount++] = selected;
-				chosen[selected] = true;
-			}
-
-			int winningAction = candidateActions[0];
-			double winningObjValue = Double.POSITIVE_INFINITY;
-			long winningTimeToApply = 1;
-			long totalTrialTime = 0;
-
-			// Evaluate candidates on copied solutions and accept the most effective one
-			for (int c = 0; c < selectedCount; c++) {
-				int actionIndex = candidateActions[c];
-				Action action = actions.get(actionIndex);
-				int targetIndex = c + 1; // use memory slots 1..3
-
-				time_exp_before = getElapsedTime();
-				new_obj_function_value = executeActionOnMemory(problem, heuristics, action, 0, targetIndex);
-				time_exp_after = getElapsedTime();
-				time_to_apply = time_exp_after - time_exp_before + 1; //+1 prevents / by 0
-				totalTrialTime += time_to_apply;
-
-				if (new_obj_function_value < winningObjValue) {
-					winningObjValue = new_obj_function_value;
-					winningAction = actionIndex;
-					winningTimeToApply = time_to_apply;
-				}
-			}
-
-			for (int c = 0; c < selectedCount; c++) {
-				if (candidateActions[c] == winningAction) {
-					problem.copySolution(c + 1, 0);
-					break;
-				}
-			}
-
-			//calculate the change in fitness from the current solution to the new accepted solution
-			fitness_change = current_obj_function_value - winningObjValue;
-			current_obj_function_value = winningObjValue;
-
-			//update f1, f2 and f3 values for appropriate actions 
-			//first two iterations dealt with separately to set-up variables
-			if (init_flag > 1) {
-				f1[winningAction] = fitness_change / winningTimeToApply + phi * f1[winningAction];
-				f2[winningAction][last_action_called] = prev_fitness_change + fitness_change / winningTimeToApply + phi * f2[winningAction][last_action_called];
-			} else if (init_flag == 1) {
-				f1[winningAction] = fitness_change / winningTimeToApply;
-				f2[winningAction][last_action_called] = prev_fitness_change + fitness_change / winningTimeToApply + prev_fitness_change;
-				init_flag++;
-			} else { //i.e. init_flag = 0
-				f1[winningAction] = fitness_change / winningTimeToApply;
-				init_flag++;
-			} 
-			for (int i = 0; i < number_of_actions; i++) {
-				f3[i] += totalTrialTime;
-			}
-			f3[winningAction] = 0.00;
-
-			if (fitness_change > 0.00) {//in case of improvement
-				phi = 0.99;
-				delta = 0.01;
-				prev_fitness_change = fitness_change / winningTimeToApply;
-			} else {//non-improvement
-				if (phi > 0.01) {
-					phi -= 0.01;                                                                          
-				}
-				phi = roundTwoDecimals(phi);
-				delta = 1.00 - phi;
-				delta = roundTwoDecimals(delta);
-				prev_fitness_change = 0.00;
-			}
-			last_action_called = winningAction;
+		boolean useParallel = parallelCandidateEvaluation && canInstantiateProblemDomain(problem.getClass());
+		List<ProblemDomain> parallelWorkers = null;
+		ExecutorService executor = null;
+		if (useParallel) {
+			executor = Executors.newFixedThreadPool(parallelThreads);
+			parallelWorkers = initialiseParallelWorkers(problem.getClass(), Math.max(3, parallelThreads));
 		}
 		
+		try {
+			while (!hasTimeExpired()) { //main loop which runs until time has expired
+				best_action_score = 0.0;
+
+				for (int i = 0; i < number_of_actions; i++) {
+					// Update the score for each action using the modified choice function
+					F[i] = phi * f1[i] + phi * f2[i][last_action_called] + delta * f3[i];
+					// Check if the current action has a better score than the best action so far
+					if (F[i] > best_action_score) {
+						// If yes, update the best action and its score
+						best_action_to_apply = i;
+						best_action_score = F[i];
+					}
+				}
+
+				int candidatesToTry = number_of_actions >= 3 ? 2 + rng.nextInt(2) : Math.min(2, number_of_actions);
+				int[] candidateActions = new int[candidatesToTry];
+				boolean[] chosen = new boolean[number_of_actions];
+				int selectedCount = 0;
+
+				candidateActions[selectedCount++] = best_action_to_apply;
+				chosen[best_action_to_apply] = true;
+
+				while (selectedCount < candidatesToTry) {
+					int selected = selectByTournament(F, chosen, tournamentSize);
+					if (selected < 0) {
+						break;
+					}
+					candidateActions[selectedCount++] = selected;
+					chosen[selected] = true;
+				}
+
+				int winningAction;
+				long totalTrialTime;
+				if (useParallel) {
+					try {
+						ParallelTrialResult result = evaluateCandidatesInParallel(parallelWorkers, heuristics, actions, candidateActions, selectedCount, executor);
+						winningAction = result.winningAction;
+						totalTrialTime = result.totalTrialTime;
+					} catch (RuntimeException e) {
+						useParallel = false;
+						if (executor != null) {
+							executor.shutdownNow();
+							executor = null;
+						}
+						parallelWorkers = null;
+						int fallbackWinningAction = candidateActions[0];
+						double winningObjValue = Double.POSITIVE_INFINITY;
+						long accumulatedTime = 0;
+						for (int c = 0; c < selectedCount; c++) {
+							int actionIndex = candidateActions[c];
+							Action action = actions.get(actionIndex);
+							time_exp_before = getElapsedTime();
+							new_obj_function_value = executeActionOnMemory(problem, heuristics, action, 0, 1);
+							time_exp_after = getElapsedTime();
+							time_to_apply = time_exp_after - time_exp_before + 1;
+							accumulatedTime += time_to_apply;
+							if (new_obj_function_value < winningObjValue) {
+								winningObjValue = new_obj_function_value;
+								fallbackWinningAction = actionIndex;
+							}
+							problem.copySolution(0, 1);
+						}
+						winningAction = fallbackWinningAction;
+						totalTrialTime = accumulatedTime;
+					}
+				} else {
+					// Fallback to sequential candidate evaluation on memory slots
+					int fallbackWinningAction = candidateActions[0];
+					double winningObjValue = Double.POSITIVE_INFINITY;
+					long accumulatedTime = 0;
+					for (int c = 0; c < selectedCount; c++) {
+						int actionIndex = candidateActions[c];
+						Action action = actions.get(actionIndex);
+						time_exp_before = getElapsedTime();
+						new_obj_function_value = executeActionOnMemory(problem, heuristics, action, 0, 1);
+						time_exp_after = getElapsedTime();
+						time_to_apply = time_exp_after - time_exp_before + 1;
+						accumulatedTime += time_to_apply;
+						if (new_obj_function_value < winningObjValue) {
+							winningObjValue = new_obj_function_value;
+							fallbackWinningAction = actionIndex;
+						}
+						problem.copySolution(0, 1);
+					}
+					winningAction = fallbackWinningAction;
+					totalTrialTime = accumulatedTime;
+				}
+
+				// Apply winning action to the real search state
+				Action winning = actions.get(winningAction);
+				time_exp_before = getElapsedTime();
+				new_obj_function_value = executeActionOnMemory(problem, heuristics, winning, 0, 0);
+				time_exp_after = getElapsedTime();
+				time_to_apply = time_exp_after - time_exp_before + 1;
+				totalTrialTime += time_to_apply;
+
+				//calculate the change in fitness from the current solution to the new accepted solution
+				fitness_change = current_obj_function_value - new_obj_function_value;
+				current_obj_function_value = new_obj_function_value;
+
+				if (useParallel) {
+					for (ProblemDomain worker : parallelWorkers) {
+						executeActionOnMemory(worker, heuristics, winning, 0, 0);
+					}
+				}
+
+				//update f1, f2 and f3 values for appropriate actions
+				//first two iterations dealt with separately to set-up variables
+				if (init_flag > 1) {
+					f1[winningAction] = fitness_change / time_to_apply + phi * f1[winningAction];
+					f2[winningAction][last_action_called] = prev_fitness_change + fitness_change / time_to_apply + phi * f2[winningAction][last_action_called];
+				} else if (init_flag == 1) {
+					f1[winningAction] = fitness_change / time_to_apply;
+					f2[winningAction][last_action_called] = prev_fitness_change + fitness_change / time_to_apply + prev_fitness_change;
+					init_flag++;
+				} else { //i.e. init_flag = 0
+					f1[winningAction] = fitness_change / time_to_apply;
+					init_flag++;
+				}
+				for (int i = 0; i < number_of_actions; i++) {
+					f3[i] += totalTrialTime;
+				}
+				f3[winningAction] = 0.00;
+
+				if (fitness_change > 0.00) {//in case of improvement
+					phi = 0.99;
+					delta = 0.01;
+					prev_fitness_change = fitness_change / time_to_apply;
+				} else {//non-improvement
+					if (phi > 0.01) {
+						phi -= 0.01;
+					}
+					phi = roundTwoDecimals(phi);
+					delta = 1.00 - phi;
+					delta = roundTwoDecimals(delta);
+					prev_fitness_change = 0.00;
+				}
+				last_action_called = winningAction;
+			}
+		} finally {
+			if (executor != null) {
+				executor.shutdownNow();
+			}
+		}
 	}
 	
 	/**
@@ -274,6 +348,100 @@ public class CCF extends HyperHeuristic {
 			result = problem.applyHeuristic(action.second, targetIndex, targetIndex);
 		}
 		return result;
+	}
+
+	private static class ParallelTrialResult {
+		private final int winningAction;
+		private final long totalTrialTime;
+
+		ParallelTrialResult(int winningAction, long totalTrialTime) {
+			this.winningAction = winningAction;
+			this.totalTrialTime = totalTrialTime;
+		}
+	}
+
+	private static class CandidateEvaluation {
+		private final int actionIndex;
+		private final double objectiveValue;
+		private final long elapsedTime;
+
+		CandidateEvaluation(int actionIndex, double objectiveValue, long elapsedTime) {
+			this.actionIndex = actionIndex;
+			this.objectiveValue = objectiveValue;
+			this.elapsedTime = elapsedTime;
+		}
+	}
+
+	private boolean canInstantiateProblemDomain(Class<?> clazz) {
+		try {
+			clazz.getConstructor(long.class);
+			return true;
+		} catch (NoSuchMethodException e) {
+			return false;
+		}
+	}
+
+	@SuppressWarnings("unchecked")
+	private ProblemDomain createProblemDomainInstance(Class<?> clazz) {
+		try {
+			return ((Class<? extends ProblemDomain>) clazz).getConstructor(long.class).newInstance(domainSeed);
+		} catch (Exception e) {
+			throw new RuntimeException("Unable to create parallel worker problem domain instance", e);
+		}
+	}
+
+	private List<ProblemDomain> initialiseParallelWorkers(Class<?> problemClass, int workerCount) {
+		List<ProblemDomain> workers = new ArrayList<>();
+		for (int i = 0; i < workerCount; i++) {
+			ProblemDomain worker = createProblemDomainInstance(problemClass);
+			worker.loadInstance(domainInstanceId);
+			worker.setMemorySize(2);
+			worker.initialiseSolution(0);
+			workers.add(worker);
+		}
+		return workers;
+	}
+
+	private ParallelTrialResult evaluateCandidatesInParallel(List<ProblemDomain> workers, Heuristic[] heuristics, List<Action> actions,
+			int[] candidateActions, int selectedCount, ExecutorService executor) {
+		List<Future<CandidateEvaluation>> futures = new ArrayList<>();
+		for (int c = 0; c < selectedCount; c++) {
+			final int actionIndex = candidateActions[c];
+			final ProblemDomain sandbox = workers.get(c % workers.size());
+			Callable<CandidateEvaluation> task = () -> {
+				long t0 = System.nanoTime();
+				double objective = executeActionOnMemory(sandbox, heuristics, actions.get(actionIndex), 0, 1);
+				long elapsed = (System.nanoTime() - t0) / 1_000_000L + 1;
+				return new CandidateEvaluation(actionIndex, objective, elapsed);
+			};
+			futures.add(executor.submit(task));
+		}
+
+		int winningAction = candidateActions[0];
+		double winningObj = Double.POSITIVE_INFINITY;
+		long totalTrialTime = 0L;
+		for (Future<CandidateEvaluation> future : futures) {
+			try {
+				CandidateEvaluation eval = future.get(3, TimeUnit.SECONDS);
+				totalTrialTime += eval.elapsedTime;
+				if (eval.objectiveValue < winningObj) {
+					winningObj = eval.objectiveValue;
+					winningAction = eval.actionIndex;
+				}
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new RuntimeException("Parallel candidate evaluation interrupted", e);
+			} catch (TimeoutException e) {
+				for (Future<CandidateEvaluation> pending : futures) {
+					pending.cancel(true);
+				}
+				throw new RuntimeException("Parallel candidate evaluation timed out", e);
+			} catch (ExecutionException e) {
+				throw new RuntimeException("Parallel candidate evaluation failed", e);
+			}
+		}
+
+		return new ParallelTrialResult(winningAction, totalTrialTime);
 	}
 
 	private int selectByTournament(double[] scores, boolean[] excluded, int tournamentSize) {
